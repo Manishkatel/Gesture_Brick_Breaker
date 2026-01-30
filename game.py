@@ -3,14 +3,32 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 import cv2
 import mediapipe as mp
-from mediapipe.python.solutions import drawing_utils  # Fixed import for 0.10.x
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+import numpy as np
 import pygame
 import sys
 
+# Hand connections (21 landmarks: 0=wrist, 4=thumb tip, 8=index tip, etc.)
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),  # Thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),  # Index
+    (0, 9), (9, 10), (10, 11), (11, 12),  # Middle
+    (0, 13), (13, 14), (14, 15), (15, 16),  # Ring
+    (0, 17), (17, 18), (18, 19), (19, 20),  # Pinky
+    (5, 9), (9, 13), (13, 17)  # Palm connections
+]
+
 # ----------------- MediaPipe Setup -----------------
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
-mp_draw = drawing_utils  # Use the correct drawing utils
+base_options = python.BaseOptions(model_asset_path='hand_landmarker.task')
+options = vision.HandLandmarkerOptions(
+    base_options=base_options,
+    num_hands=1,
+    min_hand_detection_confidence=0.7,
+    min_hand_presence_confidence=0.7,
+    min_tracking_confidence=0.7
+)
+hand_landmarker = vision.HandLandmarker.create_from_options(options)
 
 # ----------------- Pygame Setup -----------------
 pygame.init()
@@ -125,14 +143,34 @@ def game_loop():
             if not ret: break
             frame = cv2.flip(frame,1)
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = hands.process(rgb_frame)
+            
+            # Convert to MediaPipe Image
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            detection_result = hand_landmarker.detect(mp_image)
 
-            if result.multi_hand_landmarks:
-                hand_landmarks = result.multi_hand_landmarks[0]
-                mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                index_tip = hand_landmarks.landmark[8]
+            if detection_result.hand_landmarks:
+                hand_landmarks = detection_result.hand_landmarks[0]
+                # Draw landmarks on frame
+                for connection in HAND_CONNECTIONS:
+                    start_idx = connection[0]
+                    end_idx = connection[1]
+                    start_point = hand_landmarks[start_idx]
+                    end_point = hand_landmarks[end_idx]
+                    h, w, _ = frame.shape
+                    start = (int(start_point.x * w), int(start_point.y * h))
+                    end = (int(end_point.x * w), int(end_point.y * h))
+                    cv2.line(frame, start, end, (0, 255, 0), 2)
+                
+                # Draw landmarks as circles
+                for landmark in hand_landmarks:
+                    h, w, _ = frame.shape
+                    x, y = int(landmark.x * w), int(landmark.y * h)
+                    cv2.circle(frame, (x, y), 5, (0, 0, 255), -1)
+                
+                # Get index finger tip (landmark 8)
+                index_tip = hand_landmarks[8]
                 h, w, _ = frame.shape
-                finger_x, finger_y = int(index_tip.x*w), int(index_tip.y*h)
+                finger_x, finger_y = int(index_tip.x * w), int(index_tip.y * h)
                 mapped_x, _ = map_coordinates(finger_x, finger_y, w, h, GAME_WIDTH, HEIGHT)
                 # Smooth paddle movement
                 paddle_x += (mapped_x - paddle_x) * 0.2
@@ -211,7 +249,7 @@ def game_loop():
 
 # ----------------- Cleanup -----------------
 def cleanup():
-    hands.close()
+    hand_landmarker.close()
     cap.release()
     pygame.quit()
     sys.exit()
